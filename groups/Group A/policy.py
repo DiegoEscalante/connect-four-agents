@@ -27,11 +27,13 @@ class MCTSAgent(Policy):
     def __init__(self, total_game_time: float = 60.0, exploration_constant: float = math.sqrt(2)):
         self.total_game_time = total_game_time
         self.exploration_constant = exploration_constant
-        self.max_total_turns = 21  
-        
+        self.max_total_turns = 21 
+        self.total_time_remaining = total_game_time
+        self.agent_rng = np.random.default_rng()       
+         
     def mount(self) -> None:
-        self.total_time_remaining = 60
-        pass
+        self.total_time_remaining = self.total_game_time    
+
 
     def _ucb_select(self, node: MCTSNode) -> MCTSNode:
         '''Fase 1: Seleccion de nodo a expandir usando UCB'''
@@ -49,13 +51,12 @@ class MCTSAgent(Policy):
             elif math.isclose(ucb_score, best_score):
                 best_children.append(child)
 
-        rng = np.random.default_rng()
-        return rng.choice(best_children)
+
+        return self.agent_rng.choice(best_children)
 
     def _expand(self, node: MCTSNode) -> MCTSNode:
         '''Fase 2: Expansión de un nodo no completamente expandido'''
-        rng = np.random.default_rng()
-        action = node.untried_actions.pop(rng.integers(len(node.untried_actions)))
+        action = node.untried_actions.pop(self.agent_rng.integers(len(node.untried_actions)))
         next_state = node.state.transition(action)
         child_node = MCTSNode(state=next_state, parent=node, action_taken=action)
         node.children.append(child_node)
@@ -63,13 +64,12 @@ class MCTSAgent(Policy):
 
     def _simulate(self, state: ConnectState) -> int:
         '''Fase 3: Simulación de una partida aleatoria desde el nodo expandido'''
-        rng = np.random.default_rng()
         current_state = state
         while not current_state.is_final():
             actions = current_state.get_free_cols()
             if not actions:
                 break
-            action = rng.choice(actions)
+            action = self.agent_rng.choice(actions)           
             current_state = current_state.transition(int(action))
         return current_state.get_winner()
 
@@ -79,9 +79,22 @@ class MCTSAgent(Policy):
         while curr_node is not None:
             curr_node.visits += 1
             if winner == 0:
+                # Empate: beneficia a ambos por igual en el árbol
                 curr_node.wins += 0.5
-            elif curr_node.parent is not None and curr_node.parent.state.player == winner:
-                curr_node.wins += 1.0
+            else:
+                # Si el nodo actual tiene un padre, la acción que nos trajo aquí la tomó 
+                # el jugador del padre (curr_node.parent.state.player).
+                # Si ese jugador coincide con el ganador real, este nodo fue una buena elección para él.
+                if curr_node.parent is not None:
+                    if curr_node.parent.state.player == winner:
+                        curr_node.wins += 1.0
+                    else:
+                        curr_node.wins += 0.0  # El movimiento benefició al rival
+                else:
+                    # Estamos en la raíz del árbol. Evaluamos desde la perspectiva de nuestro agente.
+                    if curr_node.state.player == winner:
+                        curr_node.wins += 1.0
+
             curr_node = curr_node.parent
 
     def act(self, s: np.ndarray) -> int:
