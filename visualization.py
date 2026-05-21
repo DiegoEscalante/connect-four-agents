@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from connect4.connect_state import ConnectState
 
 # 1. Leer el historial completo del archivo JSON generado por el torneo
-archivo_path = "versus/match_Group B_vs_Group A.json"
+archivo_path = "versus/match_Group C_vs_Group A.json"
 
 with open(archivo_path, "r") as f:
     match_data = json.load(f)

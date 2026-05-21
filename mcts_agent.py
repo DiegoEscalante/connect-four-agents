@@ -43,6 +43,7 @@ class MCTSAgent(Policy):
         
         # Memoria persistente para reutilización del árbol
         self.persisted_root: Optional[MCTSNode] = None
+        self.last_simulations_count = 0
 
     def mount(self, timeout: Optional[float] = None) -> None:
         if timeout is not None:
@@ -205,7 +206,7 @@ class MCTSAgent(Policy):
             winner = self._simulate(node.state)
             self._backpropagate(node, winner)
             simulations_count += 1
-        
+        self.last_simulations_count = simulations_count
         elapsed_time = time.time() - start_turn_time
         self.total_time_remaining -= elapsed_time
 
@@ -213,7 +214,7 @@ class MCTSAgent(Policy):
         if self.use_reuse_tree:
             self.persisted_root = root_node
 
-        print(f"Turno: {my_turns_played} | Usado: {elapsed_time:.3f}s | Simul: {simulations_count} | Nodos reciclados: {'Sí' if self.use_reuse_tree and root_node.visits > simulations_count else 'No'}")
+        # print(f"Turno: {my_turns_played} | Usado: {elapsed_time:.3f}s | Simul: {simulations_count} | Nodos reciclados: {'Sí' if self.use_reuse_tree and root_node.visits > simulations_count else 'No'}")
 
         if not root_node.children:
             return legal_actions[0]

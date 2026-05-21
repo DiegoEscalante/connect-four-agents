@@ -1,8 +1,9 @@
+
 import numpy as np
 from connect4.policy import Policy
 
 
-class OhYes(Policy):
+class Hello(Policy):
 
     def mount(self) -> None:
         pass
@@ -11,3 +12,6 @@ class OhYes(Policy):
         rng = np.random.default_rng()
         available_cols = [c for c in range(7) if s[0, c] == 0]
         return int(rng.choice(available_cols))
+
+
+
