@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from connect4.connect_state import ConnectState
 
 # 1. Leer el historial completo del archivo JSON generado por el torneo
-archivo_path = "versus/match_Group C_vs_Group A.json"
+archivo_path = "versus/match_Julian_vs_GroupA.json"
 
 with open(archivo_path, "r") as f:
     match_data = json.load(f)
@@ -64,6 +64,21 @@ for numero_partida, partida_actual in enumerate(match_data["games"]):
         
         # Muestra el tablero de forma gráfica usando Matplotlib
         state.show()
+
+    # Mostrar el estado FINAL (aplicar el último movimiento)
+    # IMPORTANTE: ConnectState por default usa player=-1 (Rojo). Si el último
+    # movimiento fue de Amarillo, hay que pasarle player=+1 explícito o la
+    # transición pondría una ficha roja en vez de amarilla y rompería la
+    # detección del ganador (mostrando un falso "Empate").
+    ultimo_board, ultimo_action = partida_actual[-1]
+    matriz_ultima = np.array(ultimo_board)
+    jugador_ultimo = -1 if np.count_nonzero(matriz_ultima) % 2 == 0 else 1
+    estado_final = ConnectState(board=matriz_ultima, player=jugador_ultimo)
+    estado_final = estado_final.transition(ultimo_action)
+    ganador = estado_final.get_winner()
+    nombre_ganador = agente_rojo_minus_1 if ganador == -1 else agente_amarillo_1 if ganador == 1 else "Empate"
+    print(f"\n>>> RESULTADO FINAL: Gana {nombre_ganador} <<<")
+    estado_final.show()
 
     print(f"\n--- Fin de la partida {numero_partida + 1} ---")
     if numero_partida < len(match_data["games"]) - 1:
