@@ -92,11 +92,24 @@ def play(
 
         games.append(game_history)
 
-        # Determine winner
-        if state.get_winner() == -1:
-            a_wins += 1
-        elif state.get_winner() == 1:
-            b_wins += 1
+        # Determine winner (Corregido para asignar el punto al participante correcto según su rol)
+        winner_id = state.get_winner()
+        
+        if winner_id == -1:
+            # Si gana -1, el ganador es quien haya sido asignado a 'first'
+            ganador_tupla = first[0]
+        elif winner_id == 1:
+            # Si gana 1, el ganador es quien haya sido asignado a 'second'
+            ganador_tupla = second[0]
+        else:
+            ganador_tupla = None
+
+        # Asignamos el punto verificando el nombre del participante
+        if ganador_tupla is not None:
+            if ganador_tupla[0] == a_name:
+                a_wins += 1
+            elif ganador_tupla[0] == b_name:
+                b_wins += 1
         else:
             draws += 1
 
