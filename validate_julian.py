@@ -29,11 +29,11 @@ def play_game(red, yellow):
     return state.get_winner()
 
 
-def run_validation(n_games=100, simulations=500, guided=True):
-    julian = Julian(simulations=simulations, guided=guided)
+def run_validation(n_games=100, depth=5, use_allis=True):
+    julian = Julian(depth=depth, use_allis=use_allis)
     random_agent = RandomAgent()
 
-    print(f"Julian (sims={simulations}, guided={guided}) vs Random")
+    print(f"Julian (depth={depth}, use_allis={use_allis}) vs Random")
     print(f"{n_games} partidas por color\n")
 
     # Como Red (mueve primero, player=-1)
@@ -89,4 +89,5 @@ def run_validation(n_games=100, simulations=500, guided=True):
 
 
 if __name__ == "__main__":
-    run_validation(n_games=100, simulations=500, guided=True)
+    # depth=5 tarda ~0.8s/movimiento; N=20 es suficiente para verificar requisitos
+    run_validation(n_games=20, depth=5, use_allis=True)
