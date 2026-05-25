@@ -1,3 +1,4 @@
+import time
 import numpy as np
 from connect4.policy import Policy
 
@@ -188,11 +189,15 @@ def evaluate(board, me, w_center, w_odd_even, use_allis):
 
 
 # ─────────────────────────────────────────────────────────────
-# Búsqueda Minimax con poda Alfa-Beta
+# Búsqueda Minimax con poda Alfa-Beta + Iterative Deepening
 # ─────────────────────────────────────────────────────────────
 
 # Orden center-first fijo: [3,2,4,1,5,0,6]
 _COL_ORDER = sorted(range(COLS), key=lambda c: abs(c - CENTER_COL))
+
+
+class _Timeout(Exception):
+    pass
 
 
 def ordered_cols(board):
@@ -201,13 +206,16 @@ def ordered_cols(board):
 
 def minimax(board, depth, alpha, beta, maximizing, me,
             w_center, w_odd_even, use_allis,
-            last_row=-1, last_col=-1, last_player=0):
+            last_row=-1, last_col=-1, last_player=0, deadline=None):
     """
     Minimax con poda alfa-beta y chequeo incremental de victoria.
 
     last_row/last_col/last_player: posición de la última ficha colocada.
-    Permite verificar victoria en O(28) en vez de O(168).
+    deadline: float (time.time()) — lanza _Timeout si se supera.
     """
+    if deadline is not None and time.time() > deadline:
+        raise _Timeout()
+
     # Chequear si el último movimiento ganó la partida
     if last_row >= 0 and winner_at(board, last_row, last_col, last_player):
         gain = WIN_SCORE + depth   # ganar antes = mejor
@@ -226,7 +234,7 @@ def minimax(board, depth, alpha, beta, maximizing, me,
             child, lr = drop(board, col, me)
             value = max(value, minimax(
                 child, depth - 1, alpha, beta, False, me,
-                w_center, w_odd_even, use_allis, lr, col, me
+                w_center, w_odd_even, use_allis, lr, col, me, deadline
             ))
             alpha = max(alpha, value)
             if alpha >= beta:
@@ -239,7 +247,7 @@ def minimax(board, depth, alpha, beta, maximizing, me,
             child, lr = drop(board, col, opp)
             value = min(value, minimax(
                 child, depth - 1, alpha, beta, True, me,
-                w_center, w_odd_even, use_allis, lr, col, opp
+                w_center, w_odd_even, use_allis, lr, col, opp, deadline
             ))
             beta = min(beta, value)
             if alpha >= beta:
@@ -253,28 +261,33 @@ def minimax(board, depth, alpha, beta, maximizing, me,
 
 class Julian(Policy):
     """
-    Agente de Connect-4 basado en Minimax con poda Alfa-Beta y heurística
-    inspirada en la teoría de Victor Allis (1988).
+    Agente de Connect-4 basado en Minimax con poda Alfa-Beta, heurística
+    inspirada en la teoría de Victor Allis (1988), e Iterative Deepening
+    con límite de tiempo por partida.
 
     Paradigma: knowledge-based (búsqueda determinista + evaluación hecha a mano).
     Contrasta con MCTS, que es estocástico y no usa conocimiento del dominio.
 
     Parámetros
     ----------
-    depth      : profundidad de búsqueda (variable numérica principal).
+    depth      : profundidad máxima de búsqueda (fallback si no hay tiempo).
     w_center   : peso del sesgo al centro (columna 3 vale más).
     w_odd_even : peso del bonus de paridad de Allis.
     use_allis  : activar/desactivar la teoría de amenazas pares/impares.
+    time_limit : presupuesto total de tiempo por partida en segundos.
     """
 
-    def __init__(self, depth=5, w_center=6, w_odd_even=20, use_allis=True):
+    def __init__(self, depth=10, w_center=6, w_odd_even=20, use_allis=True,
+                 time_limit=55.0):
         self.depth      = depth
         self.w_center   = w_center
         self.w_odd_even = w_odd_even
         self.use_allis  = use_allis
+        self.time_limit = time_limit
+        self._start_time = None
 
     def mount(self, timeout=None):
-        pass
+        self._start_time = time.time()
 
     def act(self, s):
         me = infer_player(s)
@@ -284,19 +297,34 @@ class Julian(Policy):
         if tac is not None:
             return tac
 
-        # Minimax con alfa-beta sobre columnas en orden center-first
-        best_score = -AB_INF
-        best_col   = ordered_cols(s)[0]
+        # Calcular presupuesto de tiempo para este movimiento
+        elapsed = time.time() - self._start_time
+        remaining = max(0.5, self.time_limit - elapsed)
+        pieces = int(np.sum(s != 0))
+        my_moves_left = max(1, (42 - pieces + 1) // 2)
+        move_budget = (remaining / my_moves_left) * 0.85   # margen de seguridad 15%
 
-        for col in ordered_cols(s):
-            child, lr = drop(s, col, me)
-            score = minimax(
-                child, self.depth - 1, -AB_INF, AB_INF,
-                False, me, self.w_center, self.w_odd_even, self.use_allis,
-                lr, col, me
-            )
-            if score > best_score:
-                best_score = score
-                best_col   = col
+        deadline = time.time() + move_budget
+
+        # Iterative deepening: depth=1,2,3,... hasta agotar tiempo o depth máximo
+        best_col = ordered_cols(s)[0]
+
+        for d in range(1, self.depth + 1):
+            try:
+                candidate_score = -AB_INF
+                candidate_col   = ordered_cols(s)[0]
+                for col in ordered_cols(s):
+                    child, lr = drop(s, col, me)
+                    score = minimax(
+                        child, d - 1, -AB_INF, AB_INF,
+                        False, me, self.w_center, self.w_odd_even, self.use_allis,
+                        lr, col, me, deadline
+                    )
+                    if score > candidate_score:
+                        candidate_score = score
+                        candidate_col   = col
+                best_col = candidate_col   # depth d completado: actualizar
+            except _Timeout:
+                break   # usar el mejor de la profundidad anterior
 
         return best_col
