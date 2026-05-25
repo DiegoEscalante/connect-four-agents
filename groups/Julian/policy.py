@@ -1,210 +1,302 @@
-import math
 import numpy as np
 from connect4.policy import Policy
 
 ROWS = 6
 COLS = 7
-CENTER_WEIGHTS = [1, 2, 3, 4, 3, 2, 1]
+CENTER_COL = 3
+AB_INF = 10_000_000
 
+WIN_SCORE   = 100_000
+THREE_SCORE = 50
+TWO_SCORE   = 10
+OPP_THREE   = -60   # bloquear amenaza del oponente vale más que atacar
+OPP_TWO     = -10
+
+# ─────────────────────────────────────────────────────────────
+# Todas las ventanas de 4 celdas precalculadas (69 en total).
+# Cada ventana es una tupla de 4 pares (row, col).
+# Se calculan una sola vez al importar el módulo.
+# ─────────────────────────────────────────────────────────────
+_WINDOWS: list[tuple] = []
+
+for _r in range(ROWS):
+    for _c in range(COLS - 3):
+        _WINDOWS.append(((_r, _c), (_r, _c+1), (_r, _c+2), (_r, _c+3)))
+
+for _c in range(COLS):
+    for _r in range(ROWS - 3):
+        _WINDOWS.append(((_r, _c), (_r+1, _c), (_r+2, _c), (_r+3, _c)))
+
+for _r in range(ROWS - 3):
+    for _c in range(COLS - 3):
+        _WINDOWS.append(((_r, _c), (_r+1, _c+1), (_r+2, _c+2), (_r+3, _c+3)))
+
+for _r in range(3, ROWS):
+    for _c in range(COLS - 3):
+        _WINDOWS.append(((_r, _c), (_r-1, _c+1), (_r-2, _c+2), (_r-3, _c+3)))
+
+
+# ─────────────────────────────────────────────────────────────
+# Utilidades del tablero
+# ─────────────────────────────────────────────────────────────
 
 def drop(board, col, player):
-    """Devuelve un nuevo tablero con la ficha de player puesta en col."""
-    new_board = board.copy()
+    b = board.copy()
     for r in range(ROWS - 1, -1, -1):
-        if new_board[r, col] == 0:
-            new_board[r, col] = player
-            break
-    return new_board
-
-
-def winner(board):
-    """Devuelve -1, 1 o 0 si nadie ha ganado todavía."""
-    for r in range(ROWS):
-        for c in range(COLS):
-            p = board[r, c]
-            if p == 0:
-                continue
-            if c + 3 < COLS and all(board[r, c+i] == p for i in range(4)):
-                return p
-            if r + 3 < ROWS and all(board[r+i, c] == p for i in range(4)):
-                return p
-            if r + 3 < ROWS and c + 3 < COLS and all(board[r+i, c+i] == p for i in range(4)):
-                return p
-            if r + 3 < ROWS and c - 3 >= 0 and all(board[r+i, c-i] == p for i in range(4)):
-                return p
-    return 0
+        if b[r, col] == 0:
+            b[r, col] = player
+            return b, r        # devuelve tablero Y fila donde aterrizó la ficha
+    return b, -1
 
 
 def valid_cols(board):
     return [c for c in range(COLS) if board[0, c] == 0]
 
 
-def is_terminal(board):
-    return winner(board) != 0 or len(valid_cols(board)) == 0
-
-
 def infer_player(board):
-    """Red (-1) mueve primero. Si hay igual número de fichas, le toca a Red."""
-    reds = np.sum(board == -1)
-    yellows = np.sum(board == 1)
-    if reds == yellows:
-        return -1
-    else:
-        return 1
+    reds = int(np.sum(board == -1))
+    yellows = int(np.sum(board == 1))
+    return -1 if reds == yellows else 1
+
+
+def winner_at(board, r, c, player):
+    """Chequeo incremental: ¿player tiene 4 en línea pasando por (r, c)?
+    O(28) en vez de O(168) del escaneo completo."""
+    for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        count = 1
+        for sign in (1, -1):
+            nr, nc = r + sign * dr, c + sign * dc
+            while 0 <= nr < ROWS and 0 <= nc < COLS and board[nr, nc] == player:
+                count += 1
+                nr += sign * dr
+                nc += sign * dc
+        if count >= 4:
+            return True
+    return False
+
+
+def winner(board):
+    """Escaneo completo — solo para el atajo táctico inicial."""
+    for r in range(ROWS):
+        for c in range(COLS):
+            p = board[r, c]
+            if p == 0:
+                continue
+            if c + 3 < COLS and all(board[r, c + i] == p for i in range(4)):
+                return p
+            if r + 3 < ROWS and all(board[r + i, c] == p for i in range(4)):
+                return p
+            if r + 3 < ROWS and c + 3 < COLS and all(board[r + i, c + i] == p for i in range(4)):
+                return p
+            if r + 3 < ROWS and c - 3 >= 0 and all(board[r + i, c - i] == p for i in range(4)):
+                return p
+    return 0
 
 
 def immediate_tactic(board, me):
-    """Si hay victoria o bloqueo en 1 movimiento, retorna la columna. Si no, None."""
     opp = -me
-    # Si puedo ganar ya, gano
     for col in valid_cols(board):
-        if winner(drop(board, col, me)) == me:
+        b, r = drop(board, col, me)
+        if r >= 0 and winner_at(b, r, col, me):
             return col
-    # Si el oponente gana en su siguiente turno, lo bloqueo
     for col in valid_cols(board):
-        if winner(drop(board, col, opp)) == opp:
+        b, r = drop(board, col, opp)
+        if r >= 0 and winner_at(b, r, col, opp):
             return col
     return None
 
 
-def guided_action(board, player, rng):
+# ─────────────────────────────────────────────────────────────
+# Heurística de evaluación (ventanas + centro + Allis fusionados)
+# ─────────────────────────────────────────────────────────────
+
+def is_playable(board, r, c):
+    """Casilla vacía y soportada (fila inferior o celda debajo ocupada)."""
+    return board[r, c] == 0 and (r == ROWS - 1 or board[r + 1, c] != 0)
+
+
+def evaluate(board, me, w_center, w_odd_even, use_allis):
     """
-    Default policy guiada (slide 26 deck 13 + slide 21 deck 12).
-    Reglas:
-      1. Si puedo ganar en este movimiento, juego ahí.
-      2. Si el oponente gana en su siguiente turno, lo bloqueo.
-      3. Si no, muestreo proporcional a los pesos del centro.
+    Función de evaluación heurística con tres componentes:
+
+    1. Ventanas de 4: puntúa las 69 ventanas del tablero según fichas propias/oponente.
+    2. Sesgo al centro: las fichas en la columna central valen más (más ventanas disponibles).
+    3. Teoría de Allis (odd/even threats): bonus por amenazas propias en la paridad correcta.
+       - Red (me=-1) prefiere amenazas en filas IMPARES (fila_allis = ROWS-r_np es impar ↔ r_np impar).
+       - Yellow (me=+1) prefiere amenazas en filas PARES (r_np par).
     """
-    valid = valid_cols(board)
-    opp = -player
+    opp = -me
+    score = w_center * int(np.sum(board[:, CENTER_COL] == me))
 
-    # Regla 1: ganar
-    for col in valid:
-        if winner(drop(board, col, player)) == player:
-            return col
+    # Parity preferred row-index parity for each player
+    # fila_allis = ROWS - r_np  →  fila_allis impar ↔ r_np impar
+    me_good_parity  = 1 if me  == -1 else 0   # r_np % 2 == me_good_parity → preferred
+    opp_good_parity = 1 if opp == -1 else 0
 
-    # Regla 2: bloquear
-    for col in valid:
-        if winner(drop(board, col, opp)) == opp:
-            return col
+    for cells in _WINDOWS:
+        r0, c0 = cells[0]
+        r1, c1 = cells[1]
+        r2, c2 = cells[2]
+        r3, c3 = cells[3]
 
-    # Regla 3: muestreo ponderado por centro
-    weights = np.array([CENTER_WEIGHTS[c] for c in valid], dtype=float)
-    probs = weights / weights.sum()
-    return int(rng.choice(valid, p=probs))
+        v0 = board[r0, c0]
+        v1 = board[r1, c1]
+        v2 = board[r2, c2]
+        v3 = board[r3, c3]
+
+        mc = (v0 == me) + (v1 == me) + (v2 == me) + (v3 == me)
+        oc = (v0 == opp) + (v1 == opp) + (v2 == opp) + (v3 == opp)
+        ec = 4 - mc - oc
+
+        if mc == 4:
+            score += WIN_SCORE
+        elif oc == 4:
+            score -= WIN_SCORE
+        elif mc == 3 and ec == 1:
+            score += THREE_SCORE
+            if use_allis:
+                # Encuentra la casilla vacía y aplica bonus de paridad
+                if v0 == 0:
+                    er, ec_col = r0, c0
+                elif v1 == 0:
+                    er, ec_col = r1, c1
+                elif v2 == 0:
+                    er, ec_col = r2, c2
+                else:
+                    er, ec_col = r3, c3
+                if is_playable(board, er, ec_col) and (er % 2 == me_good_parity):
+                    score += w_odd_even
+        elif mc == 2 and ec == 2:
+            score += TWO_SCORE
+        elif oc == 3 and ec == 1:
+            score += OPP_THREE
+            if use_allis:
+                if v0 == 0:
+                    er, ec_col = r0, c0
+                elif v1 == 0:
+                    er, ec_col = r1, c1
+                elif v2 == 0:
+                    er, ec_col = r2, c2
+                else:
+                    er, ec_col = r3, c3
+                if is_playable(board, er, ec_col) and (er % 2 == opp_good_parity):
+                    score -= w_odd_even
+        elif oc == 2 and ec == 2:
+            score += OPP_TWO
+
+    return score
 
 
-def random_action(board, rng):
-    """Default policy aleatoria (para la versión guided=False, comparación)."""
-    valid = valid_cols(board)
-    return int(rng.choice(valid))
+# ─────────────────────────────────────────────────────────────
+# Búsqueda Minimax con poda Alfa-Beta
+# ─────────────────────────────────────────────────────────────
+
+# Orden center-first fijo: [3,2,4,1,5,0,6]
+_COL_ORDER = sorted(range(COLS), key=lambda c: abs(c - CENTER_COL))
 
 
-class Node:
-    def __init__(self, board, to_move, parent=None, action=None):
-        self.board = board
-        self.to_move = to_move      # jugador que debe mover desde aquí (-1 o 1)
-        self.parent = parent
-        self.action = action         # columna que llevó a este nodo
-        self.children = []
-        self.value_sum = 0.0         # suma de rewards desde perspectiva de to_move
-        self.visits = 0
-        self.untried = valid_cols(board)
+def ordered_cols(board):
+    return [c for c in _COL_ORDER if board[0, c] == 0]
 
-    def is_fully_expanded(self):
-        return len(self.untried) == 0
 
-    def ucb_score(self, C):
-        """
-        UCB1 desde la perspectiva del padre.
-        El padre ya movió; ahora le toca al jugador to_move de este hijo.
-        El valor promedio del hijo está desde la perspectiva de to_move,
-        pero el padre quiere maximizar SU valor, que es el opuesto.
-        """
-        if self.visits == 0:
-            return float('inf')
-        avg_value = self.value_sum / self.visits
-        exploitation = -avg_value
-        exploration = C * math.sqrt(math.log(self.parent.visits) / self.visits)
-        return exploitation + exploration
+def minimax(board, depth, alpha, beta, maximizing, me,
+            w_center, w_odd_even, use_allis,
+            last_row=-1, last_col=-1, last_player=0):
+    """
+    Minimax con poda alfa-beta y chequeo incremental de victoria.
 
+    last_row/last_col/last_player: posición de la última ficha colocada.
+    Permite verificar victoria en O(28) en vez de O(168).
+    """
+    # Chequear si el último movimiento ganó la partida
+    if last_row >= 0 and winner_at(board, last_row, last_col, last_player):
+        gain = WIN_SCORE + depth   # ganar antes = mejor
+        return gain if last_player == me else -gain
+
+    cols = valid_cols(board)
+    if not cols:
+        return 0   # empate
+
+    if depth == 0:
+        return evaluate(board, me, w_center, w_odd_even, use_allis)
+
+    if maximizing:
+        value = -AB_INF
+        for col in ordered_cols(board):
+            child, lr = drop(board, col, me)
+            value = max(value, minimax(
+                child, depth - 1, alpha, beta, False, me,
+                w_center, w_odd_even, use_allis, lr, col, me
+            ))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        opp = -me
+        value = AB_INF
+        for col in ordered_cols(board):
+            child, lr = drop(board, col, opp)
+            value = min(value, minimax(
+                child, depth - 1, alpha, beta, True, me,
+                w_center, w_odd_even, use_allis, lr, col, opp
+            ))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+
+# ─────────────────────────────────────────────────────────────
+# Agente
+# ─────────────────────────────────────────────────────────────
 
 class Julian(Policy):
-    def __init__(self, simulations=500, C=1.414, guided=True):
-        self.simulations = simulations
-        self.C = C
-        self.guided = guided
-        self.rng = np.random.default_rng()
+    """
+    Agente de Connect-4 basado en Minimax con poda Alfa-Beta y heurística
+    inspirada en la teoría de Victor Allis (1988).
 
-    def mount(self):
-        self.rng = np.random.default_rng()
+    Paradigma: knowledge-based (búsqueda determinista + evaluación hecha a mano).
+    Contrasta con MCTS, que es estocástico y no usa conocimiento del dominio.
 
-    def select(self, node):
-        while not is_terminal(node.board) and node.is_fully_expanded():
-            node = max(node.children, key=lambda ch: ch.ucb_score(self.C))
-        return node
+    Parámetros
+    ----------
+    depth      : profundidad de búsqueda (variable numérica principal).
+    w_center   : peso del sesgo al centro (columna 3 vale más).
+    w_odd_even : peso del bonus de paridad de Allis.
+    use_allis  : activar/desactivar la teoría de amenazas pares/impares.
+    """
 
-    def expand(self, node):
-        if is_terminal(node.board) or not node.untried:
-            return node
-        col = node.untried.pop()
-        new_board = drop(node.board, col, node.to_move)
-        child = Node(new_board, -node.to_move, parent=node, action=col)
-        node.children.append(child)
-        return child
+    def __init__(self, depth=5, w_center=6, w_odd_even=20, use_allis=True):
+        self.depth      = depth
+        self.w_center   = w_center
+        self.w_odd_even = w_odd_even
+        self.use_allis  = use_allis
 
-    def simulate(self, board, to_move):
-        b = board.copy()
-        p = to_move
-        while True:
-            w = winner(b)
-            if w != 0:
-                return w
-            if len(valid_cols(b)) == 0:
-                return 0
-            if self.guided:
-                col = guided_action(b, p, self.rng)
-            else:
-                col = random_action(b, self.rng)
-            b = drop(b, col, p)
-            p = -p
-
-    def backpropagate(self, node, game_winner):
-        """
-        Sube por el árbol guardando el valor desde la perspectiva del
-        jugador que mueve en cada nodo (slide 17 deck 12).
-        """
-        cur = node
-        while cur is not None:
-            cur.visits += 1
-            if game_winner == 0:
-                reward = 0.0
-            elif cur.to_move == game_winner:
-                # El jugador que iba a mover desde aquí terminó ganando
-                reward = 1.0
-            else:
-                reward = -1.0
-            cur.value_sum += reward
-            cur = cur.parent
+    def mount(self, timeout=None):
+        pass
 
     def act(self, s):
         me = infer_player(s)
 
-        # Atajo táctico (no es la diferencia conceptual, solo ahorra simulaciones)
+        # Atajo táctico O(cols): ganar o bloquear antes de gastar búsqueda
         tac = immediate_tactic(s, me)
         if tac is not None:
             return tac
 
-        root = Node(board=s.copy(), to_move=me)
+        # Minimax con alfa-beta sobre columnas en orden center-first
+        best_score = -AB_INF
+        best_col   = ordered_cols(s)[0]
 
-        for _ in range(self.simulations):
-            leaf = self.select(root)
-            child = self.expand(leaf)
-            game_winner = self.simulate(child.board, child.to_move)
-            self.backpropagate(child, game_winner)
+        for col in ordered_cols(s):
+            child, lr = drop(s, col, me)
+            score = minimax(
+                child, self.depth - 1, -AB_INF, AB_INF,
+                False, me, self.w_center, self.w_odd_even, self.use_allis,
+                lr, col, me
+            )
+            if score > best_score:
+                best_score = score
+                best_col   = col
 
-        # Hijo más visitado = decisión más robusta
-        if not root.children:
-            return valid_cols(s)[0]
-        best = max(root.children, key=lambda ch: ch.visits)
-        return best.action
+        return best_col
