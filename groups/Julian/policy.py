@@ -1,4 +1,5 @@
 import time
+import random as _rnd
 import numpy as np
 from connect4.policy import Policy
 
@@ -12,6 +13,23 @@ THREE_SCORE = 50
 TWO_SCORE   = 10
 OPP_THREE   = -60   # bloquear amenaza del oponente vale más que atacar
 OPP_TWO     = -10
+
+# ─────────────────────────────────────────────────────────────
+# Tabla de transposiciones con Zobrist hashing.
+# _ZOBRIST[(fila, col, jugador)] es un entero de 64 bits aleatorio y fijo.
+# El hash de un tablero es el XOR de los valores de cada ficha colocada.
+# XOR es invertible: agregar/quitar una ficha = XOR de su valor (O(1)).
+# _TT mapea hash → (profundidad, score); se limpia al inicio de cada partida.
+# ─────────────────────────────────────────────────────────────
+_rnd.seed(42)
+_ZOBRIST: dict = {
+    (r, c, p): _rnd.getrandbits(64)
+    for r in range(ROWS)
+    for c in range(COLS)
+    for p in (1, -1)
+}
+_TT: dict = {}
+
 
 # ─────────────────────────────────────────────────────────────
 # Todas las ventanas de 4 celdas precalculadas (69 en total).
@@ -105,6 +123,17 @@ def immediate_tactic(board, me):
         if r >= 0 and winner_at(b, r, col, opp):
             return col
     return None
+
+
+def board_hash(board):
+    """Hash Zobrist del tablero: XOR de _ZOBRIST[(r,c,player)] por cada ficha."""
+    h = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            p = int(board[r, c])
+            if p != 0:
+                h ^= _ZOBRIST[(r, c, p)]
+    return h
 
 
 # ─────────────────────────────────────────────────────────────
@@ -206,52 +235,62 @@ def ordered_cols(board):
 
 def minimax(board, depth, alpha, beta, maximizing, me,
             w_center, w_odd_even, use_allis,
-            last_row=-1, last_col=-1, last_player=0, deadline=None):
+            last_row=-1, last_col=-1, last_player=0, deadline=None, z_hash=0):
     """
-    Minimax con poda alfa-beta y chequeo incremental de victoria.
+    Minimax con poda alfa-beta, chequeo incremental de victoria y TT.
 
-    last_row/last_col/last_player: posición de la última ficha colocada.
-    deadline: float (time.time()) — lanza _Timeout si se supera.
+    z_hash: hash Zobrist del tablero actual (para TT lookup/store en O(1)).
     """
     if deadline is not None and time.time() > deadline:
         raise _Timeout()
 
-    # Chequear si el último movimiento ganó la partida
     if last_row >= 0 and winner_at(board, last_row, last_col, last_player):
-        gain = WIN_SCORE + depth   # ganar antes = mejor
+        gain = WIN_SCORE + depth
         return gain if last_player == me else -gain
 
     cols = valid_cols(board)
     if not cols:
-        return 0   # empate
+        return 0
+
+    # Transposition table: si ya evaluamos esta posición a igual o mayor depth, reusar.
+    if z_hash in _TT:
+        tt_d, tt_s = _TT[z_hash]
+        if tt_d >= depth:
+            return tt_s
 
     if depth == 0:
-        return evaluate(board, me, w_center, w_odd_even, use_allis)
+        score = evaluate(board, me, w_center, w_odd_even, use_allis)
+        _TT[z_hash] = (0, score)
+        return score
 
     if maximizing:
         value = -AB_INF
         for col in ordered_cols(board):
             child, lr = drop(board, col, me)
+            ch = z_hash ^ _ZOBRIST[(lr, col, int(me))]
             value = max(value, minimax(
                 child, depth - 1, alpha, beta, False, me,
-                w_center, w_odd_even, use_allis, lr, col, me, deadline
+                w_center, w_odd_even, use_allis, lr, col, me, deadline, ch
             ))
             alpha = max(alpha, value)
             if alpha >= beta:
                 break
+        _TT[z_hash] = (depth, value)
         return value
     else:
         opp = -me
         value = AB_INF
         for col in ordered_cols(board):
             child, lr = drop(board, col, opp)
+            ch = z_hash ^ _ZOBRIST[(lr, col, int(opp))]
             value = min(value, minimax(
                 child, depth - 1, alpha, beta, True, me,
-                w_center, w_odd_even, use_allis, lr, col, opp, deadline
+                w_center, w_odd_even, use_allis, lr, col, opp, deadline, ch
             ))
             beta = min(beta, value)
             if alpha >= beta:
                 break
+        _TT[z_hash] = (depth, value)
         return value
 
 
@@ -288,6 +327,8 @@ class Julian(Policy):
 
     def mount(self, timeout=None):
         self._start_time = time.time()
+        global _TT
+        _TT = {}   # nueva partida → limpiar cache
 
     def act(self, s):
         me = infer_player(s)
@@ -307,6 +348,7 @@ class Julian(Policy):
         deadline = time.time() + move_budget
 
         # Iterative deepening: depth=1,2,3,... hasta agotar tiempo o depth máximo
+        zh = board_hash(s)   # hash Zobrist del tablero actual (se pasa a minimax)
         best_col = ordered_cols(s)[0]
 
         for d in range(1, self.depth + 1):
@@ -315,10 +357,11 @@ class Julian(Policy):
                 candidate_col   = ordered_cols(s)[0]
                 for col in ordered_cols(s):
                     child, lr = drop(s, col, me)
+                    ch = zh ^ _ZOBRIST[(lr, col, int(me))]
                     score = minimax(
                         child, d - 1, -AB_INF, AB_INF,
                         False, me, self.w_center, self.w_odd_even, self.use_allis,
-                        lr, col, me, deadline
+                        lr, col, me, deadline, ch
                     )
                     if score > candidate_score:
                         candidate_score = score
