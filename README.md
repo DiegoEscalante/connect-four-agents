@@ -10,7 +10,7 @@
 |---------|---------|--------|
 | V1 | `policy.py` | [Ver en GitHub](https://github.com/DiegoEscalante/connect-four-agents/blob/Castaneda-agent/groups/Cristian/policy.py) |
 | V2 | `policy_qValues.py` | [Ver en GitHub](https://github.com/DiegoEscalante/connect-four-agents/blob/Castaneda-agent/groups/Cristian/policy_qValues.py) |
-|  | `entrega.py` | [`entrega.ipynb`](entrega.ipynb). |
+|  | `entrega.py` | [Ver en GitHub](https://github.com/DiegoEscalante/connect-four-agents/blob/Castaneda-agent/groups/Cristian/entrega.ipynb)|
 
 ---
 
